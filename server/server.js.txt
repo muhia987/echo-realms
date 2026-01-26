@@ -1,0 +1,352 @@
+const express = require('express');
+const http = require('http');
+const socketIo = require('socket.io');
+const sqlite3 = require('sqlite3').verbose();
+const path = require('path');
+
+const app = express();
+const server = http.createServer(app);
+const io = socketIo(server, { cors: { origin: '*' } });
+
+app.use(express.static(path.join(__dirname, '../client')));
+
+const db = new sqlite3.Database('game.db');
+db.serialize(() => {
+    db.run('CREATE TABLE IF NOT EXISTS players (id TEXT PRIMARY KEY, data TEXT)');
+});
+
+const WORLD_SIZE = 50;
+const TILE_SIZE = 32;
+let world = generateWorld();
+let players = {};
+let mobs = [];
+let npcs = [
+    { id: 'questgiver', x: 25, y: 25, color: 'yellow' },
+    { id: 'shop', x: 24, y: 25, shopItems: [
+        { name: 'health_potion', price: 15, heal: 50 },
+        { name: 'mana_potion', price: 20, heal_mp: 40 },
+        { name: 'sword', price: 50, dmg: 10 },
+        { name: 'bread', price: 5, hunger: 40 }
+    ]}
+];
+const classes = {
+    warrior: { hp: 150, maxhp: 150, mp: 50, maxmp: 50, str: 20, int_: 8, dex: 12, stamina: 120, hunger: 100 },
+    mage: { hp: 80, maxhp: 80, mp: 100, maxmp: 100, str: 5, int_: 25, dex: 12, stamina: 80, hunger: 100 },
+    rogue: { hp: 110, maxhp: 110, mp: 60, maxmp: 60, str: 12, int_: 12, dex: 20, stamina: 100, hunger: 100 }
+};
+let currentWeather = 'clear';
+
+function generateWorld() {
+    let w = Array.from({ length: WORLD_SIZE }, () => Array(WORLD_SIZE).fill('grass'));
+    for (let i = 0; i < 2000; i++) {
+        let x = Math.floor(Math.random() * WORLD_SIZE);
+        let y = Math.floor(Math.random() * WORLD_SIZE);
+        if (Math.random() < 0.15) w[y][x] = 'tree';
+        else if (Math.random() < 0.08) w[y][x] = 'water';
+    }
+    for (let dx = -2; dx <= 2; dx++) for (let dy = -2; dy <= 2; dy++) {
+        let nx = 25 + dx, ny = 25 + dy;
+        if (nx >= 0 && nx < WORLD_SIZE && ny >= 0 && ny < WORLD_SIZE) w[ny][nx] = 'grass';
+    }
+    return w;
+}
+
+function spawnMobs() {
+    mobs = [];
+    for (let i = 0; i < 25; i++) {
+        let x = Math.floor(Math.random() * (WORLD_SIZE - 10)) + 5;
+        let y = Math.floor(Math.random() * (WORLD_SIZE - 10)) + 5;
+        mobs.push({ id: `mob_${i}`, x, y, hp: 40, maxhp: 40, type: 'goblin', atk: 8 });
+    }
+}
+
+spawnMobs();
+
+function savePlayer(id) {
+    if (!players[id]) return;
+    db.run('INSERT OR REPLACE INTO players VALUES (?, ?)', [id, JSON.stringify(players[id])]);
+}
+
+function loadPlayer(id) {
+    return new Promise((resolve) => {
+        db.get('SELECT data FROM players WHERE id = ?', [id], (err, row) => {
+            if (row) {
+                players[id] = JSON.parse(row.data);
+                resolve(true);
+            } else resolve(false);
+        });
+    });
+}
+
+function getWeaponDmg(inv) {
+    return Math.max(0, ...inv.filter(i => i.dmg).map(i => i.dmg));
+}
+
+function checkLevelUp(p) {
+    let req = p.lvl * 100;
+    while (p.xp >= req) {
+        p.lvl++;
+        p.xp -= req;
+        req = p.lvl * 100;
+        let bonus = classes[p.class];
+        p.stats.maxhp += 15 + (bonus.str || 0) / 2;
+        p.stats.maxmp += 10 + (bonus.int_ || 0) / 2;
+        p.stats.hp = p.stats.maxhp;
+        p.stats.mp = p.stats.maxmp;
+    }
+}
+
+function broadcastState() {
+    let deltaPlayers = {};
+    Object.entries(players).forEach(([id, p]) => {
+        deltaPlayers[id] = { pos: p.pos };
+    });
+    io.emit('stateUpdate', { players: deltaPlayers, mobs, myPos: null });
+}
+
+function findNearestMob(pos) {
+    let nearest = null;
+    let minDist = 3;
+    mobs.forEach(m => {
+        let dist = Math.hypot(pos.x - m.x, pos.y - m.y);
+        if (dist < minDist) {
+            minDist = dist;
+            nearest = m;
+        }
+    });
+    return nearest;
+}
+
+io.on('connection', (socket) => {
+    console.log('Player connected:', socket.id);
+
+    loadPlayer(socket.id).then(loaded => {
+        socket.emit('init', { WORLD_SIZE, world, npcs });
+        socket.emit('weatherUpdate', currentWeather);
+        if (loaded) {
+            socket.emit('myUpdate', players[socket.id]);
+            broadcastState();
+        }
+    });
+
+    socket.on('createChar', (data) => {
+        if (players[socket.id]) return;
+        let cls = classes[data.class];
+        if (!cls) return;
+        players[socket.id] = {
+            name: data.name.substring(0, 20),
+            class: data.class,
+            lvl: 1,
+            xp: 0,
+            pos: { x: 25, y: 25 },
+            stats: JSON.parse(JSON.stringify(cls)),
+            inventory: [{ name: 'dagger', dmg: 3 }],
+            gold: 10,
+            quest: { active: 'kill5gobs', progress: 0 }
+        };
+        savePlayer(socket.id);
+        socket.emit('charCreated');
+        socket.emit('myUpdate', players[socket.id]);
+        broadcastState();
+    });
+
+    socket.on('move', (data) => {
+        let p = players[socket.id];
+        if (!p || p.stats.stamina < 2) return;
+        let dx = { left: -1, right: 1, up: 0, down: 0 }[data.dir] || 0;
+        let dy = { left: 0, right: 0, up: -1, down: 1 }[data.dir] || 0;
+        let speed = currentWeather === 'rain' ? 0.5 : 1;
+        let nx = p.pos.x + dx * speed;
+        let ny = p.pos.y + dy * speed;
+        if (Math.abs(nx - data.x) > 0.1 || Math.abs(ny - data.y) > 0.1) {
+            socket.emit('stateUpdate', { myPos: p.pos });
+            return;
+        }
+        if (nx >= 0 && nx < WORLD_SIZE && ny >= 0 && ny < WORLD_SIZE &&
+            world[Math.floor(ny)][Math.floor(nx)] !== 'tree' && world[Math.floor(ny)][Math.floor(nx)] !== 'water') {
+            p.pos.x = nx;
+            p.pos.y = ny;
+            p.stats.stamina -= 2;
+            broadcastState();
+        } else {
+            socket.emit('stateUpdate', { myPos: p.pos });
+        }
+    });
+
+    socket.on('attack', targetId => {
+        let p = players[socket.id];
+        if (!p) return;
+        let target = mobs.find(m => m.id === targetId);
+        if (!target || Math.hypot(p.pos.x - target.x, p.pos.y - target.y) > 1.5) return;
+        let dmg = (p.stats.str + getWeaponDmg(p.inventory)) / 10 * (0.8 + Math.random() * 0.4);
+        if (p.class === 'rogue' && Math.random() < p.stats.dex / 100) dmg *= 1.5;
+        target.hp -= dmg;
+        if (target.hp <= 0) {
+            p.xp += 50;
+            p.gold += Math.floor(Math.random() * 10) + 5;
+            if (p.quest.active === 'kill5gobs' && target.type === 'goblin') {
+                p.quest.progress++;
+                if (p.quest.progress >= 5) {
+                    p.gold += 100;
+                    p.quest = { active: null, progress: 0 };
+                    socket.emit('systemMsg', 'Quest complete! +100 gold');
+                }
+            }
+            checkLevelUp(p);
+            mobs = mobs.filter(m => m.id !== targetId);
+            spawnMobs();
+            if (Math.random() < 0.2) p.inventory.push({ name: 'health_potion', heal: 30 });
+            socket.emit('myUpdate', { stats: p.stats, inventory: p.inventory, gold: p.gold, quest: p.quest, lvl: p.lvl, xp: p.xp });
+        }
+        broadcastState();
+    });
+
+    socket.on('useItem', idx => {
+        let p = players[socket.id];
+        if (!p || idx < 0 || idx >= p.inventory.length) return;
+        let item = p.inventory[idx];
+        if (item.heal) {
+            p.stats.hp = Math.min(p.stats.maxhp, p.stats.hp + item.heal);
+        } else if (item.heal_mp) {
+            p.stats.mp = Math.min(p.stats.maxmp, p.stats.mp + item.heal_mp);
+        } else if (item.hunger) {
+            p.stats.hunger = Math.min(100, p.stats.hunger + item.hunger);
+        }
+        p.inventory.splice(idx, 1);
+        socket.emit('myUpdate', { stats: p.stats, inventory: p.inventory });
+    });
+
+    socket.on('buy', name => {
+        let p = players[socket.id];
+        if (!p) return;
+        let npc = npcs.find(n => n.id === 'shop' && Math.hypot(p.pos.x - n.x, p.pos.y - n.y) <= 1.5);
+        if (!npc) return;
+        let item = npc.shopItems.find(i => i.name === name);
+        if (!item || p.gold < item.price || p.inventory.length >= 20) return;
+        p.gold -= item.price;
+        let newItem = {...item}; // Copy
+        delete newItem.price;
+        p.inventory.push(newItem);
+        socket.emit('myUpdate', { gold: p.gold, inventory: p.inventory });
+    });
+
+    socket.on('interact', () => {
+        let p = players[socket.id];
+        if (!p) return;
+        let npc = npcs.find(n => Math.hypot(p.pos.x - n.x, p.pos.y - n.y) <= 1.5);
+        if (!npc) return;
+        if (npc.id === 'questgiver') {
+            socket.emit('systemMsg', p.quest.progress >= 5 ? 'Quest completed! New quests coming soon.' : `Kill ${5 - p.quest.progress}/5 goblins. Progress: ${p.quest.progress}`);
+        } else if (npc.id === 'shop') {
+            socket.emit('shopOpen', npc.shopItems);
+        }
+    });
+
+    socket.on('useAbility', () => {
+        let p = players[socket.id];
+        if (!p || p.stats.mp < 20) return;
+        p.stats.mp -= 20;
+        let effect;
+        if (p.class === 'warrior') {
+            let nearest = findNearestMob(p.pos);
+            if (nearest) nearest.hp -= p.stats.str * 1.2;
+            effect = 'Charged!';
+        } else if (p.class === 'mage') {
+            mobs.forEach(m => {
+                if (Math.hypot(p.pos.x - m.x, p.pos.y - m.y) < 3) m.hp -= p.stats.int_ * 1.5;
+            });
+            effect = 'Fireball cast!';
+        } else if (p.class === 'rogue') {
+            p.invuln = Date.now() + 5000;
+            effect = 'Stealthed!';
+        }
+        socket.emit('systemMsg', effect);
+        socket.emit('myUpdate', { stats: p.stats });
+        broadcastState();
+    });
+
+    socket.on('chat', msg => {
+        let p = players[socket.id];
+        if (!p || msg.length > 100) return;
+        io.emit('chatMsg', { from: p.name, msg });
+    });
+
+    socket.on('disconnect', () => {
+        console.log('Player disconnected:', socket.id);
+        if (players[socket.id]) {
+            io.emit('playerLeft', socket.id);
+            savePlayer(socket.id);
+            delete players[socket.id];
+        }
+    });
+});
+
+setInterval(() => {
+    if (Math.random() < 0.01) {
+        currentWeather = Math.random() < 0.5 ? 'rain' : 'clear';
+        io.emit('weatherUpdate', currentWeather);
+    }
+
+    let isNight = Math.sin(Date.now() / 10000) < 0;
+    Object.values(players).forEach(p => {
+        p.stats.stamina = Math.min(120, p.stats.stamina + (isNight ? 0.5 : 1));
+        p.stats.hp = Math.min(p.stats.maxhp, p.stats.hp + (isNight ? 0.1 : 0.2));
+        p.stats.mp = Math.min(p.stats.maxmp, p.stats.mp + (isNight ? 0.05 : 0.1));
+        p.stats.hunger -= isNight ? 0.03 : 0.02;
+        if (p.stats.hunger < 20) p.stats.hp -= 0.5;
+        if (p.stats.hunger < 0) p.stats.hunger = 0;
+        if (p.invuln && Date.now() > p.invuln) delete p.invuln;
+    });
+
+    mobs.forEach(m => {
+        let chaseDist = isNight ? 5 : 3;
+        let nearest = null;
+        let minDist = chaseDist;
+        Object.values(players).forEach(p => {
+            let dist = Math.hypot(p.pos.x - m.x, p.pos.y - m.y);
+            if (dist < minDist) {
+                minDist = dist;
+                nearest = p;
+            }
+        });
+        if (nearest && minDist <= chaseDist) {
+            if (nearest.pos.x > m.x) m.x = Math.min(WORLD_SIZE - 1, m.x + 1);
+            if (nearest.pos.x < m.x) m.x = Math.max(0, m.x - 1);
+            if (nearest.pos.y > m.y) m.y = Math.min(WORLD_SIZE - 1, m.y + 1);
+            if (nearest.pos.y < m.y) m.y = Math.max(0, m.y - 1);
+        } else {
+            let dirs = [[0,1],[0,-1],[1,0],[-1,0]];
+            let [dx, dy] = dirs[Math.floor(Math.random() * 4)];
+            let nx = m.x + dx, ny = m.y + dy;
+            if (nx >= 0 && nx < WORLD_SIZE && ny >= 0 && ny < WORLD_SIZE &&
+                world[ny][nx] !== 'tree' && world[ny][nx] !== 'water') {
+                m.x = nx;
+                m.y = ny;
+            }
+        }
+    });
+
+    mobs.forEach(m => {
+        Object.entries(players).forEach(([id, p]) => {
+            if (p.invuln) return;
+            let dist = Math.hypot(p.pos.x - m.x, p.pos.y - m.y);
+            if (dist <= 1.2) {
+                let dmg = m.atk * (0.7 + Math.random() * 0.6);
+                p.stats.hp -= dmg;
+                if (p.stats.hp <= 0) {
+                    p.stats.hp = p.stats.maxhp * 0.5;
+                    p.pos.x = 25;
+                    p.pos.y = 25;
+                    io.to(id).emit('systemMsg', 'You died! Respawned.');
+                }
+                io.to(id).emit('myUpdate', { stats: p.stats });
+            }
+        });
+    });
+
+    broadcastState();
+}, 200);
+
+setInterval(() => Object.keys(players).forEach(savePlayer), 30000);
+
+server.listen(3000, () => console.log('Server running on port 3000'));

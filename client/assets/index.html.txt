@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Echo Realms - Multiplayer Adventure RPG</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="/socket.io/socket.io.js"></script>
+</head>
+<body>
+    <canvas id="gameCanvas"></canvas>
+    
+    <!-- UI Overlays -->
+    <div id="ui">
+        <div id="statsPanel">
+            <div>HP: <span id="hp">100</span>/<span id="maxhp">100</span></div>
+            <div>MP: <span id="mp">50</span>/<span id="maxmp">50</span></div>
+            <div>Stamina: <span id="stamina">100</span></div>
+            <div>Hunger: <span id="hunger">100</span></div>
+            <div>Gold: <span id="gold">0</span></div>
+            <div>Lvl: <span id="lvl">1</span> XP: <span id="xp">0</span></div>
+            <div id="quest">Quest: Talk to yellow NPC</div>
+        </div>
+        <div id="abilities">
+            <h3>Abilities (Click to use)</h3>
+            <button id="abilityBtn" onclick="useAbility()">Use Class Ability</button>
+        </div>
+        <div id="chat">
+            <div id="chatLog"></div>
+            <input id="chatInput" placeholder="Chat (Enter to send)" maxlength="100">
+        </div>
+        <div id="inventory">
+            <h3>Inventory (Click to use)</h3>
+            <ul id="invList"></ul>
+        </div>
+    </div>
+
+    <!-- Modals -->
+    <div id="charModal">
+        <div class="modalContent">
+            <h1>Create Your Hero</h1>
+            <input id="nameInput" placeholder="Enter name" maxlength="20">
+            <div class="classes">
+                <button class="classBtn" onclick="selectClass('warrior')">Warrior<br>High HP/STR</button>
+                <button class="classBtn" onclick="selectClass('mage')">Mage<br>High INT/MP</button>
+                <button class="classBtn" onclick="selectClass('rogue')">Rogue<br>High DEX</button>
+            </div>
+            <button id="createBtn" disabled onclick="createChar()">Enter Realms</button>
+        </div>
+    </div>
+    <div id="shopModal" style="display:none;">
+        <div class="modalContent">
+            <h2>Shop</h2>
+            <div id="shopList"></div>
+            <button onclick="closeShop()">Close</button>
+        </div>
+    </div>
+    <div id="dialog" style="display:none;"></div>
+
+    <script src="game.js"></script>
+</body>
+</html>

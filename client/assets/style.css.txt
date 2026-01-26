@@ -1,0 +1,34 @@
+body { margin:0; overflow:hidden; font-family:Arial,sans-serif; background:#111; color:white; }
+#gameCanvas { display:block; cursor:crosshair; }
+#ui {
+    position:absolute; top:10px; left:10px; z-index:10;
+    background:rgba(0,0,0,0.7); padding:10px; border-radius:5px; min-width:200px;
+}
+#statsPanel { margin-bottom:10px; }
+#statsPanel div { margin:2px 0; }
+#abilities { margin:10px 0; }
+#abilityBtn { padding:8px; background:#ff4500; border:none; color:white; cursor:pointer; border-radius:3px; width:100%; }
+#abilityBtn:disabled { background:#666; }
+#chat { height:150px; }
+#chatLog { height:120px; overflow-y:auto; background:rgba(255,255,255,0.1); padding:5px; margin-bottom:5px; border-radius:3px; }
+#chatInput { width:100%; box-sizing:border-box; }
+#inventory { max-height:200px; overflow-y:auto; }
+#invList { list-style:none; padding:0; }
+#invList li { cursor:pointer; padding:5px; background:rgba(255,255,255,0.1); margin:2px 0; border-radius:3px; }
+#invList li:hover { background:rgba(255,255,255,0.3); }
+
+#charModal, #shopModal { 
+    position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.9); 
+    display:flex; align-items:center; justify-content:center; z-index:20;
+}
+.modalContent { background:rgba(20,20,40,0.9); padding:30px; border-radius:10px; text-align:center; max-width:400px; }
+.classes { display:flex; justify-content:space-around; margin:20px 0; }
+.classBtn { padding:15px; background:#444; border:none; color:white; cursor:pointer; border-radius:5px; min-width:100px; }
+.classBtn.selected { background:#4a90e2; }
+.classBtn:hover { background:#555; }
+.classBtn.selected:hover { background:#357abd; }
+#createBtn, button { padding:10px 20px; background:#4a90e2; border:none; color:white; border-radius:5px; cursor:pointer; margin:5px; }
+#createBtn:disabled { background:#666; cursor:not-allowed; }
+#shopList div { padding:10px; border-bottom:1px solid #555; cursor:pointer; }
+#shopList div:hover { background:#555; }
+#dialog { position:fixed; bottom:20px; right:20px; background:rgba(0,100,0,0.9); padding:15px; border-radius:5px; max-width:300px; }
